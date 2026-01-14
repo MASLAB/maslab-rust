@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 raven = { path = "../raven" }
+bno08x = { path = "../bno08x" }
 
 [[bin]]
 name = "robot"

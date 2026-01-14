@@ -1,3 +1,4 @@
+/*
 use raven::{MotorChannel, MotorMode, Raven};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -44,5 +45,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         thread::sleep(Duration::from_millis(100));
+    }
+}
+*/
+
+use bno08x::{BNO08x, SensorData, quaternion_to_euler};
+use std::error::Error;
+use std::thread;
+use std::time::Duration;
+
+const BNO08X_ADDRESS_A: u16 = 0x4A;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    println!("Initializing BNO08x IMU via I2C...");
+
+    // Create IMU instance (try default address first)
+    let mut imu = BNO08x::new(BNO08X_ADDRESS_A)?;
+    imu.init()?;
+
+    println!("BNO08x initialized successfully!");
+
+    // Enable rotation vector at 50Hz (20000 microseconds)
+    imu.enable_game_rotation_vector(20000)?;
+    imu.enable_accelerometer(20000)?;
+    imu.enable_gyroscope(20000)?;
+
+    println!("Starting sensor reading loop (Ctrl+C to exit)...");
+    println!();
+
+    loop {
+        if let Some(data) = imu.read_sensor_data()? {
+            match data {
+                SensorData::Quaternion(quat) => {
+                    let (roll, pitch, yaw) = quaternion_to_euler(&quat);
+                    println!(
+                        "Quaternion - i: {:.4}, j: {:.4}, k: {:.4}, real: {:.4}",
+                        quat.i, quat.j, quat.k, quat.real
+                    );
+                    println!(
+                        "Euler - Roll: {:.2}°, Pitch: {:.2}°, Yaw: {:.2}°",
+                        roll.to_degrees(),
+                        pitch.to_degrees(),
+                        yaw.to_degrees()
+                    );
+                    println!("Accuracy: {:.4}", quat.accuracy);
+                }
+                SensorData::Accelerometer(accel) => {
+                    println!(
+                        "Accel - X: {:.3}, Y: {:.3}, Z: {:.3} m/s²",
+                        accel.x, accel.y, accel.z
+                    );
+                }
+                SensorData::Gyroscope(gyro) => {
+                    println!(
+                        "Gyro - X: {:.3}, Y: {:.3}, Z: {:.3} rad/s",
+                        gyro.x, gyro.y, gyro.z
+                    );
+                }
+                SensorData::LinearAcceleration(lin) => {
+                    println!(
+                        "Linear Accel - X: {:.3}, Y: {:.3}, Z: {:.3} m/s²",
+                        lin.x, lin.y, lin.z
+                    );
+                }
+                _ => {}
+            }
+            println!("---");
+        }
+
+        thread::sleep(Duration::from_millis(50));
     }
 }
