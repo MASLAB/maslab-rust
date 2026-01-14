@@ -190,16 +190,21 @@ impl BNO08x {
     pub fn read_sensor_data(&mut self) -> Result<Option<SensorData>, Box<dyn Error>> {
         if let Some(packet) = self.receive_packet()? {
             if packet.len() < 10 {
+                // println!("DEBUG: Packet too short: {} bytes", packet.len());
                 return Ok(None);
             }
 
             let channel = packet[2];
+            let report_id = packet[4];
+
+            // Debug: Uncomment to see what channel/report we're getting
+            // println!("DEBUG: Channel = {}, Report ID = 0x{:02X}", channel, report_id);
+
             if channel != 3 {
                 // Input reports channel
+                // println!("DEBUG: Ignoring non-input channel: {}", channel);
                 return Ok(None);
             }
-
-            let report_id = packet[4];
 
             match report_id {
                 REPORT_ROTATION_VECTOR
@@ -208,12 +213,22 @@ impl BNO08x {
                     if packet.len() >= 18 {
                         let quat = self.parse_quaternion(&packet[5..])?;
                         return Ok(Some(SensorData::Quaternion(quat)));
+                    } else {
+                        println!(
+                            "WARNING: Quaternion packet too short: {} bytes",
+                            packet.len()
+                        );
                     }
                 }
                 REPORT_ACCELEROMETER => {
                     if packet.len() >= 14 {
                         let accel = self.parse_vector3(&packet[5..])?;
                         return Ok(Some(SensorData::Accelerometer(accel)));
+                    } else {
+                        println!(
+                            "WARNING: Accelerometer packet too short: {} bytes",
+                            packet.len()
+                        );
                     }
                 }
                 REPORT_GYROSCOPE => {
@@ -234,7 +249,9 @@ impl BNO08x {
                         return Ok(Some(SensorData::LinearAcceleration(lin_accel)));
                     }
                 }
-                _ => {}
+                _ => {
+                    // println!("DEBUG: Unknown report ID: 0x{:02X}", report_id);
+                }
             }
         }
 
@@ -283,17 +300,25 @@ impl BNO08x {
         let mut header = [0u8; 4];
         match self.i2c.read(&mut header) {
             Ok(_) => {}
-            Err(_) => return Ok(None),
+            Err(e) => {
+                // This is normal when no data is available
+                return Ok(None);
+            }
         }
 
         // Check if data is available
         let length = u16::from_le_bytes([header[0], header[1]]) & 0x7FFF;
+
+        // Debug: Uncomment to see raw packets
+        // println!("DEBUG: Header = {:02X} {:02X} {:02X} {:02X}, Length = {}",
+        //          header[0], header[1], header[2], header[3], length);
 
         if length == 0 || length == 0x7FFF {
             return Ok(None);
         }
 
         if length > 1024 {
+            println!("WARNING: Invalid packet length: {}", length);
             return Ok(None);
         }
 
@@ -304,6 +329,9 @@ impl BNO08x {
         if length > 4 {
             self.i2c.read(&mut packet[4..])?;
         }
+
+        // Debug: Uncomment to see full packet contents
+        // println!("DEBUG: Received packet: {:02X?}", &packet[..std::cmp::min(20, packet.len())]);
 
         Ok(Some(packet))
     }
@@ -351,6 +379,7 @@ pub fn quaternion_to_euler(quat: &Quaternion) -> (f32, f32, f32) {
     (roll, pitch, yaw)
 }
 
+// Robot IMU wrapper
 pub struct RobotIMU {
     imu: BNO08x,
     pub heading: f32,

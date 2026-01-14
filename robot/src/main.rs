@@ -54,13 +54,13 @@ use std::error::Error;
 use std::thread;
 use std::time::Duration;
 
-const BNO08X_ADDRESS_B: u16 = 0x4B;
+const BNO08X_ADDRESS_A: u16 = 0x4B;
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("Initializing BNO08x IMU via I2C...");
 
     // Create IMU instance (try default address first)
-    let mut imu = BNO08x::new(BNO08X_ADDRESS_B)?;
+    let mut imu = BNO08x::new(BNO08X_ADDRESS_A)?;
     imu.init()?;
 
     println!("BNO08x initialized successfully!");
