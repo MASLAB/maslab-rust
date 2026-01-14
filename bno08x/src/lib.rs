@@ -61,13 +61,42 @@ impl BNO08x {
         // Wait for device to be ready
         thread::sleep(Duration::from_millis(300));
 
+        // Clear any existing data
+        let _ = self.receive_packet();
+
         // Soft reset
         self.soft_reset()?;
-        thread::sleep(Duration::from_millis(300));
+        thread::sleep(Duration::from_millis(500));
+
+        // Wait for and read advertisement/unsolicited packets after reset
+        println!("Waiting for reset complete...");
+        for _ in 0..50 {
+            if let Ok(Some(packet)) = self.receive_packet() {
+                println!("Received packet after reset, length: {}", packet.len());
+                if packet.len() > 4 {
+                    let channel = packet[2];
+                    println!("  Channel: {}", channel);
+                    if packet.len() > 4 {
+                        println!(
+                            "  Data: {:02X?}",
+                            &packet[4..std::cmp::min(10, packet.len())]
+                        );
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
 
         // Read product ID to verify communication
-        let product_id = self.read_product_id()?;
-        println!("BNO08x Product ID: {:?}", product_id);
+        println!("Reading product ID...");
+        match self.read_product_id() {
+            Ok(product_id) => {
+                println!("BNO08x Product ID: {:?}", product_id);
+            }
+            Err(e) => {
+                println!("Warning: Could not read product ID: {}", e);
+            }
+        }
 
         Ok(())
     }
@@ -126,15 +155,49 @@ impl BNO08x {
     }
 
     pub fn enable_rotation_vector(&mut self, interval_us: u32) -> Result<(), Box<dyn Error>> {
-        self.set_feature_command(REPORT_ROTATION_VECTOR, interval_us, 0)
+        println!("Enabling rotation vector with interval: {} us", interval_us);
+        self.set_feature_command(REPORT_ROTATION_VECTOR, interval_us, 0)?;
+
+        // Wait for acknowledgment
+        thread::sleep(Duration::from_millis(100));
+
+        // Try to read response
+        for _ in 0..10 {
+            if let Ok(Some(packet)) = self.receive_packet() {
+                println!("Response packet received, length: {}", packet.len());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        Ok(())
     }
 
     pub fn enable_game_rotation_vector(&mut self, interval_us: u32) -> Result<(), Box<dyn Error>> {
-        self.set_feature_command(REPORT_GAME_ROTATION_VECTOR, interval_us, 0)
+        println!(
+            "Enabling game rotation vector with interval: {} us",
+            interval_us
+        );
+        self.set_feature_command(REPORT_GAME_ROTATION_VECTOR, interval_us, 0)?;
+
+        // Wait for acknowledgment
+        thread::sleep(Duration::from_millis(100));
+
+        // Try to read response
+        for _ in 0..10 {
+            if let Ok(Some(packet)) = self.receive_packet() {
+                println!("Response packet received, length: {}", packet.len());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        Ok(())
     }
 
     pub fn enable_accelerometer(&mut self, interval_us: u32) -> Result<(), Box<dyn Error>> {
-        self.set_feature_command(REPORT_ACCELEROMETER, interval_us, 0)
+        println!("Enabling accelerometer with interval: {} us", interval_us);
+        self.set_feature_command(REPORT_ACCELEROMETER, interval_us, 0)?;
+        thread::sleep(Duration::from_millis(50));
+        Ok(())
     }
 
     pub fn enable_linear_acceleration(&mut self, interval_us: u32) -> Result<(), Box<dyn Error>> {
@@ -190,19 +253,22 @@ impl BNO08x {
     pub fn read_sensor_data(&mut self) -> Result<Option<SensorData>, Box<dyn Error>> {
         if let Some(packet) = self.receive_packet()? {
             if packet.len() < 10 {
-                // println!("DEBUG: Packet too short: {} bytes", packet.len());
+                println!("DEBUG: Packet too short: {} bytes", packet.len());
                 return Ok(None);
             }
 
             let channel = packet[2];
             let report_id = packet[4];
 
-            // Debug: Uncomment to see what channel/report we're getting
-            // println!("DEBUG: Channel = {}, Report ID = 0x{:02X}", channel, report_id);
+            // Debug: Show what channel/report we're getting
+            println!(
+                "DEBUG: Channel = {}, Report ID = 0x{:02X}",
+                channel, report_id
+            );
 
             if channel != 3 {
                 // Input reports channel
-                // println!("DEBUG: Ignoring non-input channel: {}", channel);
+                println!("DEBUG: Ignoring non-input channel: {}", channel);
                 return Ok(None);
             }
 
@@ -210,6 +276,7 @@ impl BNO08x {
                 REPORT_ROTATION_VECTOR
                 | REPORT_GAME_ROTATION_VECTOR
                 | REPORT_GEOMAGNETIC_ROTATION_VECTOR => {
+                    println!("DEBUG: Processing quaternion report");
                     if packet.len() >= 18 {
                         let quat = self.parse_quaternion(&packet[5..])?;
                         return Ok(Some(SensorData::Quaternion(quat)));
@@ -221,6 +288,7 @@ impl BNO08x {
                     }
                 }
                 REPORT_ACCELEROMETER => {
+                    println!("DEBUG: Processing accelerometer report");
                     if packet.len() >= 14 {
                         let accel = self.parse_vector3(&packet[5..])?;
                         return Ok(Some(SensorData::Accelerometer(accel)));
@@ -250,7 +318,7 @@ impl BNO08x {
                     }
                 }
                 _ => {
-                    // println!("DEBUG: Unknown report ID: 0x{:02X}", report_id);
+                    println!("DEBUG: Unknown report ID: 0x{:02X}", report_id);
                 }
             }
         }
@@ -309,9 +377,13 @@ impl BNO08x {
         // Check if data is available
         let length = u16::from_le_bytes([header[0], header[1]]) & 0x7FFF;
 
-        // Debug: Uncomment to see raw packets
-        // println!("DEBUG: Header = {:02X} {:02X} {:02X} {:02X}, Length = {}",
-        //          header[0], header[1], header[2], header[3], length);
+        // Debug: Show raw packets
+        if length > 0 && length < 1024 {
+            println!(
+                "DEBUG: Header = {:02X} {:02X} {:02X} {:02X}, Length = {}",
+                header[0], header[1], header[2], header[3], length
+            );
+        }
 
         if length == 0 || length == 0x7FFF {
             return Ok(None);
@@ -330,8 +402,11 @@ impl BNO08x {
             self.i2c.read(&mut packet[4..])?;
         }
 
-        // Debug: Uncomment to see full packet contents
-        // println!("DEBUG: Received packet: {:02X?}", &packet[..std::cmp::min(20, packet.len())]);
+        // Debug: Show full packet contents
+        println!(
+            "DEBUG: Full packet: {:02X?}",
+            &packet[..std::cmp::min(20, packet.len())]
+        );
 
         Ok(Some(packet))
     }
@@ -444,4 +519,15 @@ impl RobotIMU {
     pub fn get_tilt_magnitude(&self) -> f32 {
         (self.roll.powi(2) + self.pitch.powi(2)).sqrt()
     }
+}
+
+fn test_i2c_connection(address: u16) -> Result<u16, Box<dyn Error>> {
+    let mut i2c = I2c::new()?;
+    i2c.set_slave_address(address)?;
+
+    // Try to read a byte to test connection
+    let mut buf = [0u8; 1];
+    i2c.read(&mut buf)?;
+
+    Ok(address)
 }

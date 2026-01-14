@@ -56,39 +56,13 @@ use std::thread;
 use std::time::Duration;
 
 const BNO08X_ADDRESS_A: u16 = 0x4A;
-const BNO08X_ADDRESS_B: u16 = 0x4B;
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("=== BNO08x Debugging ===");
     println!("Step 1: Testing I2C connection...");
 
-    // Try both addresses
-    let address = match test_i2c_connection(BNO08X_ADDRESS_A) {
-        Ok(addr) => {
-            println!("✓ Found BNO08x at address 0x{:02X}", addr);
-            addr
-        }
-        Err(_) => {
-            println!("✗ Address 0x4A failed, trying 0x4B...");
-            match test_i2c_connection(BNO08X_ADDRESS_B) {
-                Ok(addr) => {
-                    println!("✓ Found BNO08x at address 0x{:02X}", addr);
-                    addr
-                }
-                Err(e) => {
-                    println!("✗ No BNO08x found at either address");
-                    println!("Please check:");
-                    println!("  1. Wiring (VIN, GND, SDA, SCL)");
-                    println!("  2. I2C is enabled: sudo raspi-config");
-                    println!("  3. Run: i2cdetect -y 1");
-                    return Err(e);
-                }
-            }
-        }
-    };
-
     println!("\nStep 2: Initializing BNO08x...");
-    let mut imu = BNO08x::new(address)?;
+    let mut imu = BNO08x::new(BNO08X_ADDRESS_A)?;
     imu.init()?;
 
     println!("✓ BNO08x initialized successfully!");
@@ -177,15 +151,4 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         thread::sleep(Duration::from_millis(10));
     }
-}
-
-fn test_i2c_connection(address: u16) -> Result<u16, Box<dyn Error>> {
-    let mut i2c = I2c::new()?;
-    i2c.set_slave_address(address)?;
-
-    // Try to read a byte to test connection
-    let mut buf = [0u8; 1];
-    i2c.read(&mut buf)?;
-
-    Ok(address)
 }
