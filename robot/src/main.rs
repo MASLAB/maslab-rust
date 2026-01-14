@@ -50,69 +50,142 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 */
 
 use bno08x::{BNO08x, SensorData, quaternion_to_euler};
+use rppal::i2c::I2c;
 use std::error::Error;
 use std::thread;
 use std::time::Duration;
 
-const BNO08X_ADDRESS_A: u16 = 0x4B;
+const BNO08X_ADDRESS_A: u16 = 0x4A;
+const BNO08X_ADDRESS_B: u16 = 0x4B;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    println!("Initializing BNO08x IMU via I2C...");
+    println!("=== BNO08x Debugging ===");
+    println!("Step 1: Testing I2C connection...");
 
-    // Create IMU instance (try default address first)
-    let mut imu = BNO08x::new(BNO08X_ADDRESS_A)?;
+    // Try both addresses
+    let address = match test_i2c_connection(BNO08X_ADDRESS_A) {
+        Ok(addr) => {
+            println!("✓ Found BNO08x at address 0x{:02X}", addr);
+            addr
+        }
+        Err(_) => {
+            println!("✗ Address 0x4A failed, trying 0x4B...");
+            match test_i2c_connection(BNO08X_ADDRESS_B) {
+                Ok(addr) => {
+                    println!("✓ Found BNO08x at address 0x{:02X}", addr);
+                    addr
+                }
+                Err(e) => {
+                    println!("✗ No BNO08x found at either address");
+                    println!("Please check:");
+                    println!("  1. Wiring (VIN, GND, SDA, SCL)");
+                    println!("  2. I2C is enabled: sudo raspi-config");
+                    println!("  3. Run: i2cdetect -y 1");
+                    return Err(e);
+                }
+            }
+        }
+    };
+
+    println!("\nStep 2: Initializing BNO08x...");
+    let mut imu = BNO08x::new(address)?;
     imu.init()?;
 
-    println!("BNO08x initialized successfully!");
+    println!("✓ BNO08x initialized successfully!");
 
-    // Enable rotation vector at 50Hz (20000 microseconds)
+    println!("\nStep 3: Enabling sensors...");
     imu.enable_game_rotation_vector(20000)?;
-    imu.enable_accelerometer(20000)?;
-    imu.enable_gyroscope(20000)?;
+    println!("✓ Game rotation vector enabled (50Hz)");
+    thread::sleep(Duration::from_millis(100));
 
-    println!("Starting sensor reading loop (Ctrl+C to exit)...");
-    println!();
+    imu.enable_accelerometer(20000)?;
+    println!("✓ Accelerometer enabled (50Hz)");
+    thread::sleep(Duration::from_millis(100));
+
+    println!("\nStep 4: Reading sensor data (Ctrl+C to exit)...");
+    println!("Waiting for data...\n");
+
+    let mut packet_count = 0;
+    let mut quat_count = 0;
+    let mut accel_count = 0;
+    let mut other_count = 0;
 
     loop {
-        if let Some(data) = imu.read_sensor_data()? {
-            match data {
-                SensorData::Quaternion(quat) => {
-                    let (roll, pitch, yaw) = quaternion_to_euler(&quat);
-                    println!(
-                        "Quaternion - i: {:.4}, j: {:.4}, k: {:.4}, real: {:.4}",
-                        quat.i, quat.j, quat.k, quat.real
-                    );
-                    println!(
-                        "Euler - Roll: {:.2}°, Pitch: {:.2}°, Yaw: {:.2}°",
-                        roll.to_degrees(),
-                        pitch.to_degrees(),
-                        yaw.to_degrees()
-                    );
-                    println!("Accuracy: {:.4}", quat.accuracy);
+        match imu.read_sensor_data() {
+            Ok(Some(data)) => {
+                packet_count += 1;
+
+                match data {
+                    SensorData::Quaternion(quat) => {
+                        quat_count += 1;
+                        let (roll, pitch, yaw) = quaternion_to_euler(&quat);
+                        println!(
+                            "Quaternion #{} - i: {:.4}, j: {:.4}, k: {:.4}, real: {:.4}",
+                            quat_count, quat.i, quat.j, quat.k, quat.real
+                        );
+                        println!(
+                            "  Euler - Roll: {:.2}°, Pitch: {:.2}°, Yaw: {:.2}°",
+                            roll.to_degrees(),
+                            pitch.to_degrees(),
+                            yaw.to_degrees()
+                        );
+                        println!("  Accuracy: {:.4}", quat.accuracy);
+                    }
+                    SensorData::Accelerometer(accel) => {
+                        accel_count += 1;
+                        println!(
+                            "Accel #{} - X: {:.3}, Y: {:.3}, Z: {:.3} m/s²",
+                            accel_count, accel.x, accel.y, accel.z
+                        );
+                    }
+                    SensorData::Gyroscope(gyro) => {
+                        other_count += 1;
+                        println!(
+                            "Gyro - X: {:.3}, Y: {:.3}, Z: {:.3} rad/s",
+                            gyro.x, gyro.y, gyro.z
+                        );
+                    }
+                    SensorData::LinearAcceleration(lin) => {
+                        other_count += 1;
+                        println!(
+                            "Linear Accel - X: {:.3}, Y: {:.3}, Z: {:.3} m/s²",
+                            lin.x, lin.y, lin.z
+                        );
+                    }
+                    _ => {
+                        other_count += 1;
+                        println!("Other sensor data received");
+                    }
                 }
-                SensorData::Accelerometer(accel) => {
-                    println!(
-                        "Accel - X: {:.3}, Y: {:.3}, Z: {:.3} m/s²",
-                        accel.x, accel.y, accel.z
-                    );
-                }
-                SensorData::Gyroscope(gyro) => {
-                    println!(
-                        "Gyro - X: {:.3}, Y: {:.3}, Z: {:.3} rad/s",
-                        gyro.x, gyro.y, gyro.z
-                    );
-                }
-                SensorData::LinearAcceleration(lin) => {
-                    println!(
-                        "Linear Accel - X: {:.3}, Y: {:.3}, Z: {:.3} m/s²",
-                        lin.x, lin.y, lin.z
-                    );
-                }
-                _ => {}
+                println!("---");
             }
-            println!("---");
+            Ok(None) => {
+                // No data available, this is normal
+            }
+            Err(e) => {
+                println!("Error reading sensor: {}", e);
+            }
         }
 
-        thread::sleep(Duration::from_millis(50));
+        // Print stats every 100 iterations
+        if packet_count > 0 && packet_count % 100 == 0 {
+            println!(
+                "Stats: {} packets ({} quat, {} accel, {} other)",
+                packet_count, quat_count, accel_count, other_count
+            );
+        }
+
+        thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn test_i2c_connection(address: u16) -> Result<u16, Box<dyn Error>> {
+    let mut i2c = I2c::new()?;
+    i2c.set_slave_address(address)?;
+
+    // Try to read a byte to test connection
+    let mut buf = [0u8; 1];
+    i2c.read(&mut buf)?;
+
+    Ok(address)
 }

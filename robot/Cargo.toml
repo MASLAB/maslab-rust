@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 raven = { path = "../raven" }
 bno08x = { path = "../bno08x" }
+rppal = "0.22.1"
 
 [[bin]]
 name = "robot"
