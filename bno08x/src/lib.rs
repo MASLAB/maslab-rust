@@ -252,74 +252,100 @@ impl BNO08x {
 
     pub fn read_sensor_data(&mut self) -> Result<Option<SensorData>, Box<dyn Error>> {
         if let Some(packet) = self.receive_packet()? {
-            if packet.len() < 10 {
-                println!("DEBUG: Packet too short: {} bytes", packet.len());
+            // Minimum packet: 4 byte header + at least 1 byte data
+            if packet.len() < 5 {
+                println!(
+                    "DEBUG: Packet too short: {} bytes (need at least 5)",
+                    packet.len()
+                );
                 return Ok(None);
             }
 
             let channel = packet[2];
-            let report_id = packet[4];
 
-            // Debug: Show what channel/report we're getting
-            println!(
-                "DEBUG: Channel = {}, Report ID = 0x{:02X}",
-                channel, report_id
-            );
-
-            if channel != 3 {
-                // Input reports channel
-                println!("DEBUG: Ignoring non-input channel: {}", channel);
-                return Ok(None);
+            // Some packets might be on channel 0 (executable/device), we want channel 3 (input reports)
+            // But let's check what we're getting
+            if packet.len() >= 5 {
+                let report_id = packet[4];
+                println!(
+                    "DEBUG: Channel = {}, Report ID = 0x{:02X}, Length = {}",
+                    channel,
+                    report_id,
+                    packet.len()
+                );
             }
 
-            match report_id {
-                REPORT_ROTATION_VECTOR
-                | REPORT_GAME_ROTATION_VECTOR
-                | REPORT_GEOMAGNETIC_ROTATION_VECTOR => {
-                    println!("DEBUG: Processing quaternion report");
-                    if packet.len() >= 18 {
-                        let quat = self.parse_quaternion(&packet[5..])?;
-                        return Ok(Some(SensorData::Quaternion(quat)));
-                    } else {
+            // Channel 3 = Input reports (sensor data)
+            // Channel 2 = Control reports
+            // Channel 0 = Executable/device channel
+            if channel == 3 && packet.len() >= 5 {
+                let report_id = packet[4];
+
+                match report_id {
+                    REPORT_ROTATION_VECTOR
+                    | REPORT_GAME_ROTATION_VECTOR
+                    | REPORT_GEOMAGNETIC_ROTATION_VECTOR => {
                         println!(
-                            "WARNING: Quaternion packet too short: {} bytes",
+                            "DEBUG: Processing quaternion report, packet length: {}",
                             packet.len()
+                        );
+                        // Quaternion needs: report_id(1) + sequence(1) + status(1) + delay(2) + i,j,k,real(8) + accuracy(2) = 15 bytes minimum
+                        // With 4 byte header = 19 bytes total, but data starts at index 4
+                        if packet.len() >= 19 {
+                            let quat = self.parse_quaternion(&packet[5..])?;
+                            return Ok(Some(SensorData::Quaternion(quat)));
+                        } else {
+                            println!(
+                                "WARNING: Quaternion packet too short: {} bytes (need 19+)",
+                                packet.len()
+                            );
+                            println!("  Packet data: {:02X?}", packet);
+                        }
+                    }
+                    REPORT_ACCELEROMETER => {
+                        println!(
+                            "DEBUG: Processing accelerometer report, packet length: {}",
+                            packet.len()
+                        );
+                        // Accel needs: report_id(1) + sequence(1) + status(1) + delay(2) + x,y,z(6) = 11 bytes minimum
+                        if packet.len() >= 15 {
+                            let accel = self.parse_vector3(&packet[5..])?;
+                            return Ok(Some(SensorData::Accelerometer(accel)));
+                        } else {
+                            println!(
+                                "WARNING: Accelerometer packet too short: {} bytes",
+                                packet.len()
+                            );
+                        }
+                    }
+                    REPORT_GYROSCOPE => {
+                        if packet.len() >= 15 {
+                            let gyro = self.parse_vector3(&packet[5..])?;
+                            return Ok(Some(SensorData::Gyroscope(gyro)));
+                        }
+                    }
+                    REPORT_MAGNETOMETER => {
+                        if packet.len() >= 15 {
+                            let mag = self.parse_vector3(&packet[5..])?;
+                            return Ok(Some(SensorData::Magnetometer(mag)));
+                        }
+                    }
+                    REPORT_LINEAR_ACCELERATION => {
+                        if packet.len() >= 15 {
+                            let lin_accel = self.parse_vector3(&packet[5..])?;
+                            return Ok(Some(SensorData::LinearAcceleration(lin_accel)));
+                        }
+                    }
+                    _ => {
+                        println!(
+                            "DEBUG: Unknown report ID: 0x{:02X}, packet: {:02X?}",
+                            report_id,
+                            &packet[..std::cmp::min(16, packet.len())]
                         );
                     }
                 }
-                REPORT_ACCELEROMETER => {
-                    println!("DEBUG: Processing accelerometer report");
-                    if packet.len() >= 14 {
-                        let accel = self.parse_vector3(&packet[5..])?;
-                        return Ok(Some(SensorData::Accelerometer(accel)));
-                    } else {
-                        println!(
-                            "WARNING: Accelerometer packet too short: {} bytes",
-                            packet.len()
-                        );
-                    }
-                }
-                REPORT_GYROSCOPE => {
-                    if packet.len() >= 14 {
-                        let gyro = self.parse_vector3(&packet[5..])?;
-                        return Ok(Some(SensorData::Gyroscope(gyro)));
-                    }
-                }
-                REPORT_MAGNETOMETER => {
-                    if packet.len() >= 14 {
-                        let mag = self.parse_vector3(&packet[5..])?;
-                        return Ok(Some(SensorData::Magnetometer(mag)));
-                    }
-                }
-                REPORT_LINEAR_ACCELERATION => {
-                    if packet.len() >= 14 {
-                        let lin_accel = self.parse_vector3(&packet[5..])?;
-                        return Ok(Some(SensorData::LinearAcceleration(lin_accel)));
-                    }
-                }
-                _ => {
-                    println!("DEBUG: Unknown report ID: 0x{:02X}", report_id);
-                }
+            } else if channel != 3 {
+                println!("DEBUG: Ignoring channel {} (not input reports)", channel);
             }
         }
 
