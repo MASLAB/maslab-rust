@@ -1,2 +1,2 @@
-# rust
+# maslab-rust
 Rust Testing
