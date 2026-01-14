@@ -49,103 +49,78 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 */
 
-use bno08x::{BNO08x, SensorData, quaternion_to_euler};
 use rppal::i2c::I2c;
 use std::error::Error;
 use std::thread;
 use std::time::Duration;
 
-const BNO08X_ADDRESS_A: u16 = 0x4A;
+use bno08x::{BNO08x, Quaternion, SensorData, Vector3, quaternion_to_euler};
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("=== BNO08x Debugging ===");
-    println!("Step 1: Testing I2C connection...");
+    println!("Step 1: Initializing BNO08x...");
 
-    println!("\nStep 2: Initializing BNO08x...");
-    let mut imu = BNO08x::new(BNO08X_ADDRESS_A)?;
+    let mut imu = BNO08x::new()?;
     imu.init()?;
-
     println!("✓ BNO08x initialized successfully!");
 
-    println!("\nStep 3: Enabling sensors...");
-    imu.enable_game_rotation_vector(20000)?;
-    println!("✓ Game rotation vector enabled (50Hz)");
-    thread::sleep(Duration::from_millis(100));
+    println!("Step 2: Enabling sensors at 50Hz (20000 µs)...");
 
-    imu.enable_accelerometer(20000)?;
-    println!("✓ Accelerometer enabled (50Hz)");
-    thread::sleep(Duration::from_millis(100));
+    imu.enable_game_rotation(20000)?;
+    println!("✓ Game rotation vector enabled");
 
-    println!("\nStep 4: Reading sensor data (Ctrl+C to exit)...");
-    println!("Waiting for data...\n");
+    imu.enable_linear_accel(20000)?;
+    println!("✓ Linear acceleration enabled");
+
+    println!("\nStep 3: Reading sensor data (Ctrl+C to exit)...\n");
 
     let mut packet_count = 0;
     let mut quat_count = 0;
-    let mut accel_count = 0;
+    let mut lin_acc_count = 0;
     let mut other_count = 0;
 
     loop {
-        match imu.read_sensor_data() {
-            Ok(Some(data)) => {
-                packet_count += 1;
+        if let Some(data) = imu.read()? {
+            packet_count += 1;
 
-                match data {
-                    SensorData::Quaternion(quat) => {
-                        quat_count += 1;
-                        let (roll, pitch, yaw) = quaternion_to_euler(&quat);
-                        println!(
-                            "Quaternion #{} - i: {:.4}, j: {:.4}, k: {:.4}, real: {:.4}",
-                            quat_count, quat.i, quat.j, quat.k, quat.real
-                        );
-                        println!(
-                            "  Euler - Roll: {:.2}°, Pitch: {:.2}°, Yaw: {:.2}°",
-                            roll.to_degrees(),
-                            pitch.to_degrees(),
-                            yaw.to_degrees()
-                        );
-                        println!("  Accuracy: {:.4}", quat.accuracy);
-                    }
-                    SensorData::Accelerometer(accel) => {
-                        accel_count += 1;
-                        println!(
-                            "Accel #{} - X: {:.3}, Y: {:.3}, Z: {:.3} m/s²",
-                            accel_count, accel.x, accel.y, accel.z
-                        );
-                    }
-                    SensorData::Gyroscope(gyro) => {
-                        other_count += 1;
-                        println!(
-                            "Gyro - X: {:.3}, Y: {:.3}, Z: {:.3} rad/s",
-                            gyro.x, gyro.y, gyro.z
-                        );
-                    }
-                    SensorData::LinearAcceleration(lin) => {
-                        other_count += 1;
-                        println!(
-                            "Linear Accel - X: {:.3}, Y: {:.3}, Z: {:.3} m/s²",
-                            lin.x, lin.y, lin.z
-                        );
-                    }
-                    _ => {
-                        other_count += 1;
-                        println!("Other sensor data received");
-                    }
+            match data {
+                SensorData::Quaternion(quat) => {
+                    quat_count += 1;
+                    let (roll, pitch, yaw) = quaternion_to_euler(&quat);
+                    println!(
+                        "[Quat #{}] i:{:.4} j:{:.4} k:{:.4} real:{:.4} | Roll:{:.2}° Pitch:{:.2}° Yaw:{:.2}° | Acc:{:} ",
+                        quat_count,
+                        quat.i,
+                        quat.j,
+                        quat.k,
+                        quat.real,
+                        roll.to_degrees(),
+                        pitch.to_degrees(),
+                        yaw.to_degrees(),
+                        quat.accuracy
+                    );
                 }
-                println!("---");
-            }
-            Ok(None) => {
-                // No data available, this is normal
-            }
-            Err(e) => {
-                println!("Error reading sensor: {}", e);
+
+                SensorData::LinearAccel(accel) => {
+                    lin_acc_count += 1;
+                    println!(
+                        "[LinAccel #{}] X:{:.3} Y:{:.3} Z:{:.3} m/s²",
+                        lin_acc_count, accel.x, accel.y, accel.z
+                    );
+                }
+
+                _ => {
+                    other_count += 1;
+                    println!("Other sensor data received");
+                }
             }
         }
 
-        // Print stats every 100 iterations
+        // Print stats every 100 packets
         if packet_count > 0 && packet_count % 100 == 0 {
             println!(
-                "Stats: {} packets ({} quat, {} accel, {} other)",
-                packet_count, quat_count, accel_count, other_count
+                "Stats: {} packets ({} quat, {} linear accel, {} other)",
+                packet_count, quat_count, lin_acc_count, other_count
             );
         }
 

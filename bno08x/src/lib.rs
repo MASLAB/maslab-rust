@@ -1,11 +1,26 @@
 use rppal::i2c::I2c;
-use std::error::Error;
-use std::thread;
-use std::time::Duration;
+use std::{error::Error, thread, time::Duration};
 
-// BNO08x I2C address options
-const BNO08X_ADDRESS_A: u16 = 0x4A; // Default (SA0 = LOW)
-const BNO08X_ADDRESS_B: u16 = 0x4B; // If SA0 = HIGH
+const BNO08X_ADDR: u16 = 0x4A;
+
+// SHTP Channels
+const CH_EXEC: u8 = 0;
+const CH_CONTROL: u8 = 2;
+const CH_INPUT: u8 = 3;
+
+// Executable reports
+const REPORT_RESET: u8 = 0x01;
+const REPORT_PRODUCT_ID_REQ: u8 = 0xF9;
+const REPORT_PRODUCT_ID_RESP: u8 = 0xF8;
+
+// Control
+const REPORT_SET_FEATURE: u8 = 0xFD;
+
+// Sensors
+const REPORT_GAME_ROTATION_VECTOR: u8 = 0x08;
+const REPORT_LINEAR_ACCEL: u8 = 0x04;
+
+/*
 
 // SHTP (Sensor Hub Transport Protocol) constants
 const SHTP_REPORT_COMMAND_RESPONSE: u8 = 0xF1;
@@ -25,26 +40,219 @@ const REPORT_GRAVITY: u8 = 0x06;
 const REPORT_GAME_ROTATION_VECTOR: u8 = 0x08;
 const REPORT_GEOMAGNETIC_ROTATION_VECTOR: u8 = 0x09;
 
-pub struct BNO08x {
-    i2c: I2c,
-    sequence_number: [u8; 6],
-}
+*/
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone)]
 pub struct Quaternion {
     pub i: f32,
     pub j: f32,
     pub k: f32,
     pub real: f32,
-    pub accuracy: f32,
+    pub accuracy: u8,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone)]
 pub struct Vector3 {
     pub x: f32,
     pub y: f32,
     pub z: f32,
 }
+
+#[derive(Debug)]
+pub enum SensorData {
+    Quaternion(Quaternion),
+    LinearAccel(Vector3),
+}
+
+pub struct BNO08x {
+    i2c: I2c,
+    seq: [u8; 6],
+}
+
+impl BNO08x {
+    pub fn new() -> Result<Self, Box<dyn Error>> {
+        let mut i2c = I2c::new()?;
+        i2c.set_slave_address(BNO08X_ADDR)?;
+
+        Ok(Self { i2c, seq: [0; 6] })
+    }
+
+    pub fn init(&mut self) -> Result<(), Box<dyn Error>> {
+        thread::sleep(Duration::from_millis(300));
+        self.reset()?;
+        self.wait_for_advertise()?;
+        self.read_product_id()?;
+        Ok(())
+    }
+
+    fn reset(&mut self) -> Result<(), Box<dyn Error>> {
+        self.send_packet(CH_EXEC, &[REPORT_RESET, 0x01])?;
+        thread::sleep(Duration::from_millis(500));
+        Ok(())
+    }
+
+    fn wait_for_advertise(&mut self) -> Result<(), Box<dyn Error>> {
+        for _ in 0..50 {
+            if let Some(_) = self.receive_packet()? {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        Err("No advertise packet".into())
+    }
+
+    fn read_product_id(&mut self) -> Result<(), Box<dyn Error>> {
+        self.send_packet(CH_EXEC, &[REPORT_PRODUCT_ID_REQ])?;
+
+        for _ in 0..20 {
+            if let Some(pkt) = self.receive_packet()? {
+                if pkt[0] == REPORT_PRODUCT_ID_RESP {
+                    println!("Product ID OK");
+                    return Ok(());
+                }
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        Err("Product ID failed".into())
+    }
+
+    pub fn enable_game_rotation(&mut self, interval_us: u32) -> Result<(), Box<dyn Error>> {
+        self.set_feature(REPORT_GAME_ROTATION_VECTOR, interval_us)
+    }
+
+    pub fn enable_linear_accel(&mut self, interval_us: u32) -> Result<(), Box<dyn Error>> {
+        self.set_feature(REPORT_LINEAR_ACCEL, interval_us)
+    }
+
+    fn set_feature(&mut self, report: u8, interval_us: u32) -> Result<(), Box<dyn Error>> {
+        let mut payload = vec![REPORT_SET_FEATURE, report, 0x00, 0x00, 0x00];
+        payload.extend(interval_us.to_le_bytes());
+        payload.extend([0, 0, 0, 0]); // batch interval
+        payload.extend([0, 0, 0, 0]); // specific config
+
+        self.send_packet(CH_CONTROL, &payload)?;
+        Ok(())
+    }
+
+    fn send_packet(&mut self, channel: u8, payload: &[u8]) -> Result<(), Box<dyn Error>> {
+        let mut packet = vec![0, 0, channel, self.next_seq(channel)];
+        packet.extend_from_slice(payload);
+
+        let len = packet.len() as u16;
+        packet[0..2].copy_from_slice(&len.to_le_bytes());
+
+        self.i2c.write(&packet)?;
+        Ok(())
+    }
+
+    fn next_seq(&mut self, ch: u8) -> u8 {
+        let s = self.seq[ch as usize];
+        self.seq[ch as usize] = s.wrapping_add(1);
+        s
+    }
+
+    fn receive_packet(&mut self) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+        let mut full = Vec::new();
+
+        loop {
+            let mut hdr = [0u8; 4];
+            if self.i2c.read(&mut hdr).is_err() {
+                return Ok(None);
+            }
+
+            let len = u16::from_le_bytes([hdr[0], hdr[1]]);
+            let cont = (len & 0x8000) != 0;
+            let size = (len & 0x7FFF) as usize;
+
+            if size < 4 || size > 1024 {
+                return Ok(None);
+            }
+
+            let mut buf = vec![0u8; size - 4];
+            self.i2c.read(&mut buf)?;
+
+            full.extend_from_slice(&buf);
+
+            if !cont {
+                break;
+            }
+        }
+
+        Ok(Some(full))
+    }
+
+    pub fn read(&mut self) -> Result<Option<SensorData>, Box<dyn Error>> {
+        let pkt = match self.receive_packet()? {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        match pkt[0] {
+            REPORT_GAME_ROTATION_VECTOR => {
+                let acc = pkt[2] & 0x03;
+                let i = i16::from_le_bytes([pkt[5], pkt[6]]) as f32 / 16384.0;
+                let j = i16::from_le_bytes([pkt[7], pkt[8]]) as f32 / 16384.0;
+                let k = i16::from_le_bytes([pkt[9], pkt[10]]) as f32 / 16384.0;
+                let r = i16::from_le_bytes([pkt[11], pkt[12]]) as f32 / 16384.0;
+
+                Ok(Some(SensorData::Quaternion(Quaternion {
+                    i,
+                    j,
+                    k,
+                    real: r,
+                    accuracy: acc,
+                })))
+            }
+
+            REPORT_LINEAR_ACCEL => {
+                let x = i16::from_le_bytes([pkt[5], pkt[6]]) as f32 / 1024.0;
+                let y = i16::from_le_bytes([pkt[7], pkt[8]]) as f32 / 1024.0;
+                let z = i16::from_le_bytes([pkt[9], pkt[10]]) as f32 / 1024.0;
+
+                Ok(Some(SensorData::LinearAccel(Vector3 { x, y, z })))
+            }
+
+            _ => Ok(None),
+        }
+    }
+}
+
+pub fn quaternion_to_euler(quat: &Quaternion) -> (f32, f32, f32) {
+    // Extract squared terms
+    let sqw = quat.real * quat.real;
+    let sqi = quat.i * quat.i;
+    let sqj = quat.j * quat.j;
+    let sqk = quat.k * quat.k;
+
+    // Roll (x-axis rotation)
+    let roll = (2.0 * (quat.real * quat.i + quat.j * quat.k)).atan2(1.0 - 2.0 * (sqi + sqj));
+
+    // Pitch (y-axis rotation)
+    let pitch = (2.0 * (quat.real * quat.j - quat.k * quat.i)).asin();
+
+    // Yaw (z-axis rotation)
+    let yaw = (2.0 * (quat.real * quat.k + quat.i * quat.j)).atan2(1.0 - 2.0 * (sqj + sqk));
+
+    (roll, pitch, yaw)
+}
+/*
+    fn send_packet(&mut self, channel: u8, payload: &[u8]) -> Result<(), Box<dyn Error>> {
+        let mut packet = vec![0, 0, channel, self.next_seq(channel)];
+        packet.extend_from_slice(payload);
+
+        let len = packet.len() as u16;
+        packet[0..2].copy_from_slice(&len.to_le_bytes());
+
+        self.i2c.write(&packet)?;
+        Ok(())
+    }
+
+    fn next_seq(&mut self, ch: u8) -> u8 {
+        let s = self.seq[ch as usize];
+        self.seq[ch as usize] = s.wrapping_add(1);
+        s
+    }
 
 impl BNO08x {
     pub fn new(address: u16) -> Result<Self, Box<dyn Error>> {
@@ -557,3 +765,4 @@ fn test_i2c_connection(address: u16) -> Result<u16, Box<dyn Error>> {
 
     Ok(address)
 }
+*/
